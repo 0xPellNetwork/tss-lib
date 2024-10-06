@@ -9,10 +9,11 @@ package keygen
 import (
 	"encoding/hex"
 	"errors"
+	"math/big"
 	"sync"
 
-	"github.com/bnb-chain/tss-lib/common"
-	"github.com/bnb-chain/tss-lib/tss"
+	"github.com/zeta-chain/tss-lib/crypto/facproof"
+	"github.com/zeta-chain/tss-lib/tss"
 )
 
 const (
@@ -27,85 +28,61 @@ func (round *round2) Start() *tss.Error {
 	round.started = true
 	round.resetOK()
 
-	common.Logger.Debugf(
-		"%s Setting up DLN verification with concurrency level of %d",
-		round.PartyID(),
-		round.Concurrency(),
-	)
-	verifier := NewProofVerifier(round.Concurrency())
-
 	i := round.PartyID().Index
 
 	// 6. verify dln proofs, store r1 message pieces, ensure uniqueness of h1j, h2j
 	h1H2Map := make(map[string]struct{}, len(round.temp.kgRound1Messages)*2)
 	dlnProof1FailCulprits := make([]*tss.PartyID, len(round.temp.kgRound1Messages))
 	dlnProof2FailCulprits := make([]*tss.PartyID, len(round.temp.kgRound1Messages))
-	modProofFailCulprits := make([]*tss.PartyID, len(round.temp.kgRound1Messages))
-	modProofTildeFailCulprits := make([]*tss.PartyID, len(round.temp.kgRound1Messages))
 	wg := new(sync.WaitGroup)
 	for j, msg := range round.temp.kgRound1Messages {
 		r1msg := msg.Content().(*KGRound1Message)
-		H1j, H2j, NTildej, paillierPKj :=
+		H1j, H2j, NTildej, paillierPubKeyj :=
 			r1msg.UnmarshalH1(),
 			r1msg.UnmarshalH2(),
 			r1msg.UnmarshalNTilde(),
 			r1msg.UnmarshalPaillierPK()
-		if paillierPKj.N.BitLen() != paillierBitsLen {
+
+		if paillierPubKeyj.N.BitLen() != paillierBitsLen {
 			return round.WrapError(errors.New("got paillier modulus with insufficient bits for this party"), msg.GetFrom())
 		}
-		if H1j.Cmp(H2j) == 0 {
-			return round.WrapError(errors.New("h1j and h2j were equal for this party"), msg.GetFrom())
-		}
+
 		if NTildej.BitLen() != paillierBitsLen {
 			return round.WrapError(errors.New("got NTildej with insufficient bits for this party"), msg.GetFrom())
 		}
-		h1JHex, h2JHex := hex.EncodeToString(H1j.Bytes()), hex.EncodeToString(H2j.Bytes())
-		if _, found := h1H2Map[h1JHex]; found {
-			return round.WrapError(errors.New("this h1j was already used by another party"), msg.GetFrom())
-		}
-		if _, found := h1H2Map[h2JHex]; found {
-			return round.WrapError(errors.New("this h2j was already used by another party"), msg.GetFrom())
-		}
-		h1H2Map[h1JHex], h1H2Map[h2JHex] = struct{}{}, struct{}{}
 
-		wg.Add(4)
-		_j := j
-		_msg := msg
-
-		verifier.VerifyDLNProof1(r1msg, H1j, H2j, NTildej, func(isValid bool) {
-			if !isValid {
-				dlnProof1FailCulprits[_j] = _msg.GetFrom()
+		if H1j.Cmp(H2j) == 0 {
+			return round.WrapError(errors.New("h1j and h2j were equal for this party"), msg.GetFrom())
+		}
+		// the H1, H2 dupe check is disabled during some benchmarking scenarios to allow reuse of pre-params
+		if !round.Params().UNSAFE_KGIgnoreH1H2Dupes() {
+			h1JHex, h2JHex := hex.EncodeToString(H1j.Bytes()), hex.EncodeToString(H2j.Bytes())
+			if _, found := h1H2Map[h1JHex]; found {
+				return round.WrapError(errors.New("this h1j was already used by another party"), msg.GetFrom())
+			}
+			if _, found := h1H2Map[h2JHex]; found {
+				return round.WrapError(errors.New("this h2j was already used by another party"), msg.GetFrom())
+			}
+			h1H2Map[h1JHex], h1H2Map[h2JHex] = struct{}{}, struct{}{}
+		}
+		wg.Add(2)
+		go func(j int, msg tss.ParsedMessage, r1msg *KGRound1Message, H1j, H2j, NTildej *big.Int) {
+			if dlnProof1, err := r1msg.UnmarshalDLNProof1(); err != nil || !dlnProof1.Verify(H1j, H2j, NTildej) {
+				dlnProof1FailCulprits[j] = msg.GetFrom()
 			}
 			wg.Done()
-		})
-		verifier.VerifyDLNProof2(r1msg, H2j, H1j, NTildej, func(isValid bool) {
-			if !isValid {
-				dlnProof2FailCulprits[_j] = _msg.GetFrom()
+		}(j, msg, r1msg, H1j, H2j, NTildej)
+		go func(j int, msg tss.ParsedMessage, r1msg *KGRound1Message, H1j, H2j, NTildej *big.Int) {
+			if dlnProof2, err := r1msg.UnmarshalDLNProof2(); err != nil || !dlnProof2.Verify(H2j, H1j, NTildej) {
+				dlnProof2FailCulprits[j] = msg.GetFrom()
 			}
 			wg.Done()
-		})
-		verifier.VerifyModProof(r1msg, paillierPKj.N, func(isValid bool) {
-			if !isValid {
-				modProofFailCulprits[_j] = _msg.GetFrom()
-			}
-			wg.Done()
-		})
-		verifier.VerifyModProofTilde(r1msg, NTildej, func(isValid bool) {
-			if !isValid {
-				modProofTildeFailCulprits[_j] = _msg.GetFrom()
-			}
-			wg.Done()
-		})
+		}(j, msg, r1msg, H1j, H2j, NTildej)
 	}
 	wg.Wait()
 	for _, culprit := range append(dlnProof1FailCulprits, dlnProof2FailCulprits...) {
 		if culprit != nil {
 			return round.WrapError(errors.New("dln proof verification failed"), culprit)
-		}
-	}
-	for _, culprit := range append(modProofFailCulprits, modProofTildeFailCulprits...) {
-		if culprit != nil {
-			return round.WrapError(errors.New("mod proof verification failed"), culprit)
 		}
 	}
 	// save NTilde_j, h1_j, h2_j, ...
@@ -129,16 +106,18 @@ func (round *round2) Start() *tss.Error {
 	// 5. p2p send share ij to Pj
 	shares := round.temp.shares
 	for j, Pj := range round.Parties().IDs() {
+		facProof, err := facproof.NewProof(tss.EC(), round.save.PaillierSK.N, round.save.NTildej[j],
+			round.save.H1j[j], round.save.H2j[j], round.save.PaillierSK.P, round.save.PaillierSK.Q)
+		if err != nil {
+			return round.WrapError(err, round.PartyID())
+		}
+		r2msg1 := NewKGRound2Message1(Pj, round.PartyID(), shares[j], facProof)
 		// do not send to this Pj, but store for round 3
 		if j == i {
-			round.temp.kgRound2Message1s[j] = NewKGRound2Message1(Pj, round.PartyID(), shares[j], nil, nil)
+			round.temp.kgRound2Message1s[j] = r2msg1
 			continue
 		}
-		H1j, H2j, NTildej := round.save.H1j[j], round.save.H2j[j], round.save.NTildej[j]
-		facProof := round.save.LocalPreParams.PaillierSK.FactorProof(NTildej, H1j, H2j)
-		facProofTilde := round.temp.skTilde.FactorProof(NTildej, H1j, H2j)
-
-		r2msg1 := NewKGRound2Message1(Pj, round.PartyID(), shares[j], facProof, facProofTilde)
+		round.temp.kgRound2Message1s[i] = r2msg1
 		round.out <- r2msg1
 	}
 

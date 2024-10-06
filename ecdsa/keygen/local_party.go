@@ -11,11 +11,10 @@ import (
 	"fmt"
 	"math/big"
 
-	"github.com/bnb-chain/tss-lib/common"
-	cmt "github.com/bnb-chain/tss-lib/crypto/commitments"
-	"github.com/bnb-chain/tss-lib/crypto/paillier"
-	"github.com/bnb-chain/tss-lib/crypto/vss"
-	"github.com/bnb-chain/tss-lib/tss"
+	"github.com/zeta-chain/tss-lib/common"
+	cmt "github.com/zeta-chain/tss-lib/crypto/commitments"
+	"github.com/zeta-chain/tss-lib/crypto/vss"
+	"github.com/zeta-chain/tss-lib/tss"
 )
 
 // Implements Party
@@ -52,7 +51,6 @@ type (
 		vs            vss.Vs
 		shares        vss.Shares
 		deCommitPolyG cmt.HashDeCommitment
-		skTilde       *paillier.PrivateKey
 	}
 )
 
@@ -144,7 +142,7 @@ func (p *LocalParty) StoreMessage(msg tss.ParsedMessage) (bool, *tss.Error) {
 	case *KGRound3Message:
 		p.temp.kgRound3Messages[fromPIdx] = msg
 	default: // unrecognised message, just ignore!
-		common.Logger.Warningf("unrecognised message ignored: %v", msg)
+		common.Logger.Warnf("unrecognised message ignored: %v", msg)
 		return false, nil
 	}
 	return true, nil

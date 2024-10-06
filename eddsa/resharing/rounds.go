@@ -7,8 +7,8 @@
 package resharing
 
 import (
-	"github.com/bnb-chain/tss-lib/eddsa/keygen"
-	"github.com/bnb-chain/tss-lib/tss"
+	"github.com/zeta-chain/tss-lib/eddsa/keygen"
+	"github.com/zeta-chain/tss-lib/tss"
 )
 
 const (

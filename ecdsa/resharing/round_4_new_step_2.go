@@ -14,12 +14,11 @@ import (
 
 	errors2 "github.com/pkg/errors"
 
-	"github.com/bnb-chain/tss-lib/common"
-	"github.com/bnb-chain/tss-lib/crypto"
-	"github.com/bnb-chain/tss-lib/crypto/commitments"
-	"github.com/bnb-chain/tss-lib/crypto/vss"
-	"github.com/bnb-chain/tss-lib/ecdsa/keygen"
-	"github.com/bnb-chain/tss-lib/tss"
+	"github.com/zeta-chain/tss-lib/common"
+	"github.com/zeta-chain/tss-lib/crypto"
+	"github.com/zeta-chain/tss-lib/crypto/commitments"
+	"github.com/zeta-chain/tss-lib/crypto/vss"
+	"github.com/zeta-chain/tss-lib/tss"
 )
 
 func (round *round4) Start() *tss.Error {
@@ -37,13 +36,6 @@ func (round *round4) Start() *tss.Error {
 		return nil
 	}
 
-	common.Logger.Debugf(
-		"%s Setting up DLN verification with concurrency level of %d",
-		round.PartyID(),
-		round.Concurrency(),
-	)
-	verifier := keygen.NewProofVerifier(round.Concurrency())
-
 	Pi := round.PartyID()
 	i := Pi.Index
 
@@ -52,8 +44,6 @@ func (round *round4) Start() *tss.Error {
 	paiProofCulprits := make([]*tss.PartyID, len(round.temp.dgRound2Message1s)) // who caused the error(s)
 	dlnProof1FailCulprits := make([]*tss.PartyID, len(round.temp.dgRound2Message1s))
 	dlnProof2FailCulprits := make([]*tss.PartyID, len(round.temp.dgRound2Message1s))
-	modProofFailCulprits := make([]*tss.PartyID, len(round.temp.dgRound2Message1s))
-	modProofTildeFailCulprits := make([]*tss.PartyID, len(round.temp.dgRound2Message1s))
 	wg := new(sync.WaitGroup)
 	for j, msg := range round.temp.dgRound2Message1s {
 		r2msg1 := msg.Content().(*DGRound2Message1)
@@ -73,54 +63,33 @@ func (round *round4) Start() *tss.Error {
 			return round.WrapError(errors.New("this h2j was already used by another party"), msg.GetFrom())
 		}
 		h1H2Map[h1JHex], h1H2Map[h2JHex] = struct{}{}, struct{}{}
-		wg.Add(5)
+		wg.Add(3)
 		go func(j int, msg tss.ParsedMessage, r2msg1 *DGRound2Message1) {
 			if ok, err := r2msg1.UnmarshalPaillierProof().Verify(paiPK.N, msg.GetFrom().KeyInt(), round.save.ECDSAPub); err != nil || !ok {
 				paiProofCulprits[j] = msg.GetFrom()
-				common.Logger.Warningf("paillier verify failed for party %s", msg.GetFrom(), err)
+				common.Logger.Warnf("paillier verify failed for party %s", msg.GetFrom(), err)
 			}
 			wg.Done()
 		}(j, msg, r2msg1)
-		_j := j
-		_msg := msg
-		verifier.VerifyDLNProof1(r2msg1, H1j, H2j, NTildej, func(isValid bool) {
-			if !isValid {
-				dlnProof1FailCulprits[_j] = _msg.GetFrom()
-				common.Logger.Warningf("dln proof 1 verify failed for party %s", _msg.GetFrom())
+		go func(j int, msg tss.ParsedMessage, r2msg1 *DGRound2Message1, H1j, H2j, NTildej *big.Int) {
+			if dlnProof1, err := r2msg1.UnmarshalDLNProof1(); err != nil || !dlnProof1.Verify(H1j, H2j, NTildej) {
+				dlnProof1FailCulprits[j] = msg.GetFrom()
+				common.Logger.Warnf("dln proof 1 verify failed for party %s", msg.GetFrom(), err)
 			}
 			wg.Done()
-		})
-		verifier.VerifyDLNProof2(r2msg1, H2j, H1j, NTildej, func(isValid bool) {
-			if !isValid {
-				dlnProof2FailCulprits[_j] = _msg.GetFrom()
-				common.Logger.Warningf("dln proof 2 verify failed for party %s", _msg.GetFrom())
+		}(j, msg, r2msg1, H1j, H2j, NTildej)
+		go func(j int, msg tss.ParsedMessage, r2msg1 *DGRound2Message1, H1j, H2j, NTildej *big.Int) {
+			if dlnProof2, err := r2msg1.UnmarshalDLNProof2(); err != nil || !dlnProof2.Verify(H2j, H1j, NTildej) {
+				dlnProof2FailCulprits[j] = msg.GetFrom()
+				common.Logger.Warnf("dln proof 2 verify failed for party %s", msg.GetFrom(), err)
 			}
 			wg.Done()
-		})
-		verifier.VerifyModProof(r2msg1, paiPK.N, func(isValid bool) {
-			if !isValid {
-				modProofFailCulprits[_j] = _msg.GetFrom()
-				common.Logger.Warningf("mod proof verify failed for party %s", _msg.GetFrom())
-			}
-			wg.Done()
-		})
-		verifier.VerifyModProofTilde(r2msg1, NTildej, func(isValid bool) {
-			if !isValid {
-				modProofFailCulprits[_j] = _msg.GetFrom()
-				common.Logger.Warningf("mod proof tilde verify failed for party %s", _msg.GetFrom())
-			}
-			wg.Done()
-		})
+		}(j, msg, r2msg1, H1j, H2j, NTildej)
 	}
 	wg.Wait()
 	for _, culprit := range append(append(paiProofCulprits, dlnProof1FailCulprits...), dlnProof2FailCulprits...) {
 		if culprit != nil {
 			return round.WrapError(errors.New("dln proof verification failed"), culprit)
-		}
-	}
-	for _, culprit := range append(modProofFailCulprits, modProofTildeFailCulprits...) {
-		if culprit != nil {
-			return round.WrapError(errors.New("mod proof verification failed"), culprit)
 		}
 	}
 	// save NTilde_j, h1_j, h2_j received in NewCommitteeStep1 here
@@ -138,7 +107,7 @@ func (round *round4) Start() *tss.Error {
 	newXi := big.NewInt(0)
 
 	// 5-9.
-	modQ := common.ModInt(round.Params().EC().Params().N)
+	modQ := common.ModInt(tss.EC().Params().N)
 	vjc := make([][]*crypto.ECPoint, len(round.OldParties().IDs()))
 	for j := 0; j <= len(vjc)-1; j++ { // P1..P_t+1. Ps are indexed from 0 here
 		// 6-7.
@@ -154,7 +123,7 @@ func (round *round4) Start() *tss.Error {
 			// TODO collect culprits and return a list of them as per convention
 			return round.WrapError(errors.New("de-commitment of v_j0..v_jt failed"), round.Parties().IDs()[j])
 		}
-		vj, err := crypto.UnFlattenECPoints(round.Params().EC(), flatVs)
+		vj, err := crypto.UnFlattenECPoints(tss.EC(), flatVs)
 		if err != nil {
 			return round.WrapError(err, round.Parties().IDs()[j])
 		}
@@ -167,7 +136,7 @@ func (round *round4) Start() *tss.Error {
 			ID:        round.PartyID().KeyInt(),
 			Share:     new(big.Int).SetBytes(r3msg1.Share),
 		}
-		if ok := sharej.Verify(round.Params().EC(), round.NewThreshold(), vj); !ok {
+		if ok := sharej.Verify(round.NewThreshold(), vj); !ok {
 			// TODO collect culprits and return a list of them as per convention
 			return round.WrapError(errors.New("share from old committee did not pass Verify()"), round.Parties().IDs()[j])
 		}
@@ -217,73 +186,35 @@ func (round *round4) Start() *tss.Error {
 		return round.WrapError(errors2.Wrapf(err, "newBigXj.Add(Vc[c].ScalarMult(z))"), paiProofCulprits...)
 	}
 
-	for j, Pj := range round.NewParties().IDs() {
-
-		if common.Eq(Pi.KeyInt(), Pj.KeyInt()) {
-			round.temp.dgRound4Message1s[j] = NewDGRound4Message1(Pj, Pi, nil, nil)
-		}
-
-		// Add factor proofs
-		H1j, H2j, NTildej := round.save.H1j[j], round.save.H2j[j], round.save.NTildej[j]
-		facProof := round.save.LocalPreParams.PaillierSK.FactorProof(NTildej, H1j, H2j)
-		facProofTilde := round.temp.skTilde.FactorProof(NTildej, H1j, H2j)
-
-		r4msg1 := NewDGRound4Message1(Pj, Pi, facProof, facProofTilde)
-		round.out <- r4msg1
-	}
-
 	round.temp.newXi = newXi
 	round.temp.newKs = newKs
 	round.temp.newBigXjs = newBigXjs
 
 	// Send an "ACK" message to both committees to signal that we're ready to save our data
-	r4msg := NewDGRound4Message2(round.OldAndNewParties(), Pi)
-	round.temp.dgRound4Message2s[i] = r4msg
+	r4msg := NewDGRound4Message(round.OldAndNewParties(), Pi)
+	round.temp.dgRound4Messages[i] = r4msg
 	round.out <- r4msg
 
 	return nil
 }
 
 func (round *round4) CanAccept(msg tss.ParsedMessage) bool {
-	if _, ok := msg.Content().(*DGRound4Message1); ok {
-		return !msg.IsBroadcast()
-	}
-	if _, ok := msg.Content().(*DGRound4Message2); ok {
+	if _, ok := msg.Content().(*DGRound4Message); ok {
 		return msg.IsBroadcast()
 	}
 	return false
 }
 
 func (round *round4) Update() (bool, *tss.Error) {
-	if round.ReSharingParameters.IsNewCommittee() {
-		// accept messages from new -> everyone
-		for j, msg1 := range round.temp.dgRound4Message2s {
-			if round.newOK[j] {
-				continue
-			}
-			if msg1 == nil || !round.CanAccept(msg1) {
-				return false, nil
-			}
-			// accept message from new -> new committee
-			msg2 := round.temp.dgRound4Message1s[j]
-			if msg2 == nil || !round.CanAccept(msg2) {
-				return false, nil
-			}
-			round.newOK[j] = true
+	// accept messages from new -> old&new committees
+	for j, msg := range round.temp.dgRound4Messages {
+		if round.newOK[j] {
+			continue
 		}
-	} else if round.ReSharingParams().IsOldCommittee() {
-		// accept messages from new -> old committee
-		for j, msg := range round.temp.dgRound4Message2s {
-			if round.newOK[j] {
-				continue
-			}
-			if msg == nil || !round.CanAccept(msg) {
-				return false, nil
-			}
-			round.newOK[j] = true
+		if msg == nil || !round.CanAccept(msg) {
+			return false, nil
 		}
-	} else {
-		return false, round.WrapError(errors.New("this party is not in the old or the new committee"), round.PartyID())
+		round.newOK[j] = true
 	}
 	return true, nil
 }

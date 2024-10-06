@@ -35,29 +35,18 @@ func MustGetRandomInt(bits int) *big.Int {
 	return n
 }
 
-func GetRandomPositiveInt(lessThan *big.Int) *big.Int {
-	if lessThan == nil || zero.Cmp(lessThan) != -1 {
+func GetRandomPositiveInt(upper *big.Int) *big.Int {
+	if upper == nil || zero.Cmp(upper) != -1 {
 		return nil
 	}
 	var try *big.Int
 	for {
-		try = MustGetRandomInt(lessThan.BitLen())
-		if try.Cmp(lessThan) < 0 && try.Cmp(zero) >= 0 {
+		try = MustGetRandomInt(upper.BitLen())
+		if try.Cmp(upper) < 0 && try.Cmp(zero) >= 0 {
 			break
 		}
 	}
 	return try
-}
-
-// Sample an integer in range (-limit, limit)
-func GetRandomInt(limit *big.Int) *big.Int {
-	limitMinus1 := new(big.Int).Sub(limit, big.NewInt(1))
-	limitDoubleMinus1 := new(big.Int).Add(limit, limitMinus1)
-	// get an integer in [0, 2*limit-1) and subtract limit-1
-	// to get an integer in [-limit+1, limit-1]
-	i := GetRandomPositiveInt(limitDoubleMinus1)
-	i = i.Sub(i, limitMinus1)
-	return i
 }
 
 func GetRandomPrimeInt(bits int) *big.Int {
@@ -111,19 +100,4 @@ func GetRandomGeneratorOfTheQuadraticResidue(n *big.Int) *big.Int {
 	f := GetRandomPositiveRelativelyPrimeInt(n)
 	fSq := new(big.Int).Mul(f, f)
 	return fSq.Mod(fSq, n)
-}
-
-// Sample an integer in range (-2^power, 2^power)
-func GetRandomIntIn2PowerRange(power uint) *big.Int {
-	limit := big.NewInt(1)
-	limit.Lsh(limit, power)
-	return GetRandomInt(limit)
-}
-
-// Sample an integer in range (-2^power * multiplier, 2^power * multiplier)
-func GetRandomIntIn2PowerMulRange(power uint, multiplier *big.Int) *big.Int {
-	limit := big.NewInt(1)
-	limit.Lsh(limit, power)
-	limit.Mul(limit, multiplier)
-	return GetRandomInt(limit)
 }

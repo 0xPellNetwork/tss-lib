@@ -10,12 +10,12 @@ import (
 	"fmt"
 	"math/big"
 
-	"github.com/bnb-chain/tss-lib/common"
-	"github.com/bnb-chain/tss-lib/crypto"
-	cmt "github.com/bnb-chain/tss-lib/crypto/commitments"
-	"github.com/bnb-chain/tss-lib/crypto/vss"
-	"github.com/bnb-chain/tss-lib/eddsa/keygen"
-	"github.com/bnb-chain/tss-lib/tss"
+	"github.com/zeta-chain/tss-lib/common"
+	"github.com/zeta-chain/tss-lib/crypto"
+	cmt "github.com/zeta-chain/tss-lib/crypto/commitments"
+	"github.com/zeta-chain/tss-lib/crypto/vss"
+	"github.com/zeta-chain/tss-lib/eddsa/keygen"
+	"github.com/zeta-chain/tss-lib/tss"
 )
 
 // Implements Party
@@ -153,7 +153,7 @@ func (p *LocalParty) StoreMessage(msg tss.ParsedMessage) (bool, *tss.Error) {
 	case *DGRound4Message:
 		p.temp.dgRound4Messages[fromPIdx] = msg
 	default: // unrecognised message, just ignore!
-		common.Logger.Warningf("unrecognised message ignored: %v", msg)
+		common.Logger.Warnf("unrecognised message ignored: %v", msg)
 		return false, nil
 	}
 	return true, nil

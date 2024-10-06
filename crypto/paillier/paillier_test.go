@@ -4,19 +4,19 @@
 // terms governing use, modification, and redistribution, is contained in the
 // file LICENSE at the root of the source code distribution tree.
 
-package paillier
+package paillier_test
 
 import (
-	"context"
 	"math/big"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/bnb-chain/tss-lib/common"
-	"github.com/bnb-chain/tss-lib/crypto"
-	"github.com/bnb-chain/tss-lib/tss"
+	"github.com/zeta-chain/tss-lib/common"
+	"github.com/zeta-chain/tss-lib/crypto"
+	. "github.com/zeta-chain/tss-lib/crypto/paillier"
+	"github.com/zeta-chain/tss-lib/tss"
 )
 
 // Using a modulus length of 2048 is recommended in the GG18 spec
@@ -31,14 +31,11 @@ var (
 
 func setUp(t *testing.T) {
 	if privateKey != nil && publicKey != nil {
+		t.Parallel()
 		return
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-
 	var err error
-	privateKey, publicKey, err = GenerateKeyPair(ctx, testPaillierKeyLength)
+	privateKey, publicKey, err = GenerateKeyPair(testPaillierKeyLength, 10*time.Minute)
 	assert.NoError(t, err)
 }
 
@@ -57,6 +54,12 @@ func TestEncrypt(t *testing.T) {
 	t.Log(cipher)
 }
 
+func TestEncryptWithChosenRandomnessFailsBadRandom(t *testing.T) {
+	setUp(t)
+	_, err := publicKey.EncryptWithChosenRandomness(big.NewInt(1), big.NewInt(0))
+	assert.Error(t, err, "must error")
+}
+
 func TestEncryptDecrypt(t *testing.T) {
 	setUp(t)
 	exp := big.NewInt(100)
@@ -68,10 +71,56 @@ func TestEncryptDecrypt(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 0, exp.Cmp(ret),
 		"wrong decryption ", ret, " is not ", exp)
+}
 
-	cypher = new(big.Int).Set(privateKey.N)
-	_, err = privateKey.Decrypt(cypher)
-	assert.Error(t, err)
+func TestEncryptDecryptAndRecoverRandomness(t *testing.T) {
+	setUp(t)
+	exp := big.NewInt(100)
+	cypher, rand, err := privateKey.EncryptAndReturnRandomness(exp)
+	if err != nil {
+		t.Error(err)
+	}
+	ret, rec, err := privateKey.DecryptAndRecoverRandomness(cypher)
+	assert.NoError(t, err)
+	assert.Equal(t, 0, exp.Cmp(ret),
+		"wrong decryption ", ret, " is not ", exp)
+	assert.Equal(t, rand, rec,
+		"wrong randomness ", rand, " is not ", rec)
+}
+
+func TestEncryptDecryptAndRecoverRandomnessAndReEncrypt1(t *testing.T) {
+	setUp(t)
+	exp := big.NewInt(100)
+	cypher, rand, _ := privateKey.EncryptAndReturnRandomness(exp)
+	ret, err := privateKey.PublicKey.EncryptWithChosenRandomness(exp, rand)
+	assert.NoError(t, err)
+	assert.Equal(t, 0, cypher.Cmp(ret),
+		"wrong encryption ", ret, " is not ", cypher)
+}
+
+func TestEncryptDecryptAndRecoverRandomnessAndReEncrypt2(t *testing.T) {
+	setUp(t)
+	exp := big.NewInt(100)
+	cypher, _, _ := privateKey.EncryptAndReturnRandomness(exp)
+	_, rand, _ := privateKey.DecryptAndRecoverRandomness(cypher)
+	ret, err := privateKey.PublicKey.EncryptWithChosenRandomness(exp, rand)
+	assert.NoError(t, err)
+	assert.Equal(t, 0, cypher.Cmp(ret),
+		"wrong encryption ", ret, " is not ", cypher)
+}
+
+func TestEncryptWithChosenRandomnessDecrypt(t *testing.T) {
+	setUp(t)
+	exp := big.NewInt(100)
+	rnd := common.GetRandomPositiveInt(privateKey.N)
+	cypher, err := privateKey.EncryptWithChosenRandomness(exp, rnd)
+	if err != nil {
+		t.Error(err)
+	}
+	ret, err := privateKey.Decrypt(cypher)
+	assert.NoError(t, err)
+	assert.Equal(t, 0, exp.Cmp(ret),
+		"wrong decryption ", ret, " is not ", exp)
 }
 
 func TestHomoMul(t *testing.T) {
@@ -152,27 +201,4 @@ func TestGenerateXs(t *testing.T) {
 	for _, xi := range xs {
 		assert.True(t, common.IsNumberInMultiplicativeGroup(N, xi))
 	}
-}
-
-func TestGetPQGeneric(t *testing.T) {
-	p, q := privateKey.GetPQ()
-
-	n := new(big.Int).Mul(p, q)
-	assert.True(t, p.ProbablyPrime(5), "P should be prime") // 5 rounds of Miller-Rabin
-	assert.True(t, q.ProbablyPrime(5), "Q should be prime") // 5 rounds of Miller-Rabin
-	assert.Equal(t, 0, publicKey.N.Cmp(n), "P*Q should equal N")
-}
-
-func TestGetPQSpecific(t *testing.T) {
-	p := big.NewInt(97)
-	q := big.NewInt(89)
-	N := new(big.Int).Mul(p, q)
-	phiN := big.NewInt(8448)
-
-	pKey := &PublicKey{N: N}
-	sKey := &PrivateKey{PublicKey: *pKey, LambdaN: nil, PhiN: phiN}
-	p2, q2 := sKey.GetPQ()
-
-	assert.Equal(t, 0, p2.Cmp(p), "P should equal 97")
-	assert.Equal(t, 0, q2.Cmp(q), "Q should equal 89")
 }

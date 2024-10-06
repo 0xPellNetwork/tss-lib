@@ -7,13 +7,13 @@
 package mta
 
 import (
-	"crypto/elliptic"
 	"errors"
 	"fmt"
 	"math/big"
 
-	"github.com/bnb-chain/tss-lib/common"
-	"github.com/bnb-chain/tss-lib/crypto/paillier"
+	"github.com/zeta-chain/tss-lib/common"
+	"github.com/zeta-chain/tss-lib/crypto/paillier"
+	"github.com/zeta-chain/tss-lib/tss"
 )
 
 const (
@@ -32,14 +32,14 @@ type (
 )
 
 // ProveRangeAlice implements Alice's range proof used in the MtA and MtAwc protocols from GG18Spec (9) Fig. 9.
-func ProveRangeAlice(ec elliptic.Curve, pk *paillier.PublicKey, c, NTilde, h1, h2, m, r *big.Int) (*RangeProofAlice, error) {
+func ProveRangeAlice(pk *paillier.PublicKey, c, NTilde, h1, h2, m, r *big.Int) (*RangeProofAlice, error) {
 	if pk == nil || NTilde == nil || h1 == nil || h2 == nil || c == nil || m == nil || r == nil {
 		return nil, errors.New("ProveRangeAlice constructor received nil value(s)")
 	}
 
-	q := ec.Params().N
+	q := tss.EC().Params().N
 	q3 := new(big.Int).Mul(q, q)
-	q3 = new(big.Int).Mul(q, q3)
+	q3.Mul(q3, q)
 	qNTilde := new(big.Int).Mul(q, NTilde)
 	q3NTilde := new(big.Int).Mul(q3, NTilde)
 
@@ -60,16 +60,20 @@ func ProveRangeAlice(ec elliptic.Curve, pk *paillier.PublicKey, c, NTilde, h1, h
 	z = modNTilde.Mul(z, modNTilde.Exp(h2, rho))
 
 	// 6.
-	modNSquared := common.ModInt(pk.NSquare())
-	u := modNSquared.Exp(pk.Gamma(), alpha)
-	u = modNSquared.Mul(u, modNSquared.Exp(beta, pk.N))
+	modNSq := common.ModInt(pk.NSquare())
+	u := modNSq.Exp(pk.Gamma(), alpha)
+	u = modNSq.Mul(u, modNSq.Exp(beta, pk.N))
 
 	// 7.
 	w := modNTilde.Exp(h1, alpha)
 	w = modNTilde.Mul(w, modNTilde.Exp(h2, gamma))
 
 	// 8-9. e'
-	e := common.HashToN(q, append(pk.AsInts(), c, z, u, w)...)
+	var e *big.Int
+	{ // must use RejectionSample
+		eHash := common.SHA512_256i(append(pk.AsInts(), c, z, u, w)...)
+		e = common.RejectionSample(q, eHash)
+	}
 
 	modN := common.ModInt(pk.N)
 	s := modN.Exp(r, e)
@@ -100,14 +104,37 @@ func RangeProofAliceFromBytes(bzs [][]byte) (*RangeProofAlice, error) {
 	}, nil
 }
 
-func (pf *RangeProofAlice) Verify(ec elliptic.Curve, pk *paillier.PublicKey, NTilde, h1, h2, c *big.Int) bool {
+func (pf *RangeProofAlice) Verify(pk *paillier.PublicKey, NTilde, h1, h2, c *big.Int) bool {
 	if pf == nil || !pf.ValidateBasic() || pk == nil || NTilde == nil || h1 == nil || h2 == nil || c == nil {
 		return false
 	}
 
-	q := ec.Params().N
+	NSq := new(big.Int).Mul(pk.N, pk.N)
+	q := tss.EC().Params().N
 	q3 := new(big.Int).Mul(q, q)
 	q3 = new(big.Int).Mul(q, q3)
+
+	if !common.IsInInterval(pf.Z, NTilde) {
+		return false
+	}
+	if !common.IsInInterval(pf.U, pk.NSquare()) {
+		return false
+	}
+	if !common.IsInInterval(pf.W, NTilde) {
+		return false
+	}
+	if !common.IsInInterval(pf.S, pk.N) {
+		return false
+	}
+	if new(big.Int).GCD(nil, nil, pf.Z, NTilde).Cmp(one) != 0 {
+		return false
+	}
+	if new(big.Int).GCD(nil, nil, pf.U, pk.NSquare()).Cmp(one) != 0 {
+		return false
+	}
+	if new(big.Int).GCD(nil, nil, pf.W, NTilde).Cmp(one) != 0 {
+		return false
+	}
 
 	// 3.
 	if pf.S1.Cmp(q3) == 1 {
@@ -115,20 +142,24 @@ func (pf *RangeProofAlice) Verify(ec elliptic.Curve, pk *paillier.PublicKey, NTi
 	}
 
 	// 1-2. e'
-	e := common.HashToN(q, append(pk.AsInts(), c, pf.Z, pf.U, pf.W)...)
+	var e *big.Int
+	{ // must use RejectionSample
+		eHash := common.SHA512_256i(append(pk.AsInts(), c, pf.Z, pf.U, pf.W)...)
+		e = common.RejectionSample(q, eHash)
+	}
 
 	var products *big.Int // for the following conditionals
 	minusE := new(big.Int).Sub(zero, e)
 
 	{ // 4. gamma^s_1 * s^N * c^-e
-		modNSquared := common.ModInt(pk.NSquare())
+		modNSq := common.ModInt(NSq)
 
-		cExpMinusE := modNSquared.Exp(c, minusE)
-		sExpN := modNSquared.Exp(pf.S, pk.N)
-		gammaExpS1 := modNSquared.Exp(pk.Gamma(), pf.S1)
+		cExpMinusE := modNSq.Exp(c, minusE)
+		sExpN := modNSq.Exp(pf.S, pk.N)
+		gammaExpS1 := modNSq.Exp(pk.Gamma(), pf.S1)
 		// u != (4)
-		products = modNSquared.Mul(gammaExpS1, sExpN)
-		products = modNSquared.Mul(products, cExpMinusE)
+		products = modNSq.Mul(gammaExpS1, sExpN)
+		products = modNSq.Mul(products, cExpMinusE)
 		if pf.U.Cmp(products) != 0 {
 			return false
 		}

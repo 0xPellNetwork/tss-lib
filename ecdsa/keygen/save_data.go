@@ -11,9 +11,9 @@ import (
 	"errors"
 	"math/big"
 
-	"github.com/bnb-chain/tss-lib/crypto"
-	"github.com/bnb-chain/tss-lib/crypto/paillier"
-	"github.com/bnb-chain/tss-lib/tss"
+	"github.com/zeta-chain/tss-lib/crypto"
+	"github.com/zeta-chain/tss-lib/crypto/paillier"
+	"github.com/zeta-chain/tss-lib/tss"
 )
 
 type (
@@ -45,7 +45,7 @@ type (
 		BigXj       []*crypto.ECPoint     // Xj
 		PaillierPKs []*paillier.PublicKey // pkj
 
-		// used for test assertions (may be discarded)
+		// the ECDSA public key
 		ECDSAPub *crypto.ECPoint // y
 	}
 )
@@ -61,6 +61,8 @@ func NewLocalPartySaveData(partyCount int) (saveData LocalPartySaveData) {
 
 func (preParams LocalPreParams) Validate() bool {
 	return preParams.PaillierSK != nil &&
+		preParams.PaillierSK.P != nil &&
+		preParams.PaillierSK.Q != nil &&
 		preParams.NTildei != nil &&
 		preParams.H1i != nil &&
 		preParams.H2i != nil

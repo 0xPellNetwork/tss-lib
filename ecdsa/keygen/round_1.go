@@ -10,13 +10,12 @@ import (
 	"errors"
 	"math/big"
 
-	"github.com/bnb-chain/tss-lib/common"
-	"github.com/bnb-chain/tss-lib/crypto"
-	cmts "github.com/bnb-chain/tss-lib/crypto/commitments"
-	"github.com/bnb-chain/tss-lib/crypto/dlnproof"
-	"github.com/bnb-chain/tss-lib/crypto/paillier"
-	"github.com/bnb-chain/tss-lib/crypto/vss"
-	"github.com/bnb-chain/tss-lib/tss"
+	"github.com/zeta-chain/tss-lib/common"
+	"github.com/zeta-chain/tss-lib/crypto"
+	cmts "github.com/zeta-chain/tss-lib/crypto/commitments"
+	"github.com/zeta-chain/tss-lib/crypto/dlnp"
+	"github.com/zeta-chain/tss-lib/crypto/vss"
+	"github.com/zeta-chain/tss-lib/tss"
 )
 
 var (
@@ -41,13 +40,13 @@ func (round *round1) Start() *tss.Error {
 	i := Pi.Index
 
 	// 1. calculate "partial" key share ui
-	ui := common.GetRandomPositiveInt(round.Params().EC().Params().N)
+	ui := common.GetRandomPositiveInt(tss.EC().Params().N)
 
 	round.temp.ui = ui
 
 	// 2. compute the vss shares
 	ids := round.Parties().IDs().Keys()
-	vs, shares, err := vss.Create(round.Params().EC(), round.Threshold(), ui, ids)
+	vs, shares, err := vss.Create(round.Threshold(), ui, ids)
 	if err != nil {
 		return round.WrapError(err, Pi)
 	}
@@ -75,7 +74,7 @@ func (round *round1) Start() *tss.Error {
 	} else if round.save.LocalPreParams.ValidateWithProof() {
 		preParams = &round.save.LocalPreParams
 	} else {
-		preParams, err = GeneratePreParams(round.SafePrimeGenTimeout(), round.Concurrency())
+		preParams, err = GeneratePreParams(round.SafePrimeGenTimeout(), 3)
 		if err != nil {
 			return round.WrapError(errors.New("pre-params generation failed"), Pi)
 		}
@@ -93,23 +92,8 @@ func (round *round1) Start() *tss.Error {
 		preParams.P,
 		preParams.Q,
 		preParams.NTildei
-	dlnProof1 := dlnproof.NewDLNProof(h1i, h2i, alpha, p, q, NTildei)
-	dlnProof2 := dlnproof.NewDLNProof(h2i, h1i, beta, p, q, NTildei)
-
-	modProof := preParams.PaillierSK.ModProof()
-
-	// NTildei = (2p+1) * (2q+1)
-	// phi(NTildei) = ((2p+1) - 1) * ((2q+1) - 1) = 2p * 2q
-	pp := new(big.Int).Add(p, p)
-	qq := new(big.Int).Add(q, q)
-	phiNTilde := new(big.Int).Mul(pp, qq)
-	// As per paillier.go
-	gcdTilde := new(big.Int).GCD(nil, nil, pp, qq)
-	lambdaNTilde := new(big.Int).Div(phiNTilde, gcdTilde)
-	pkTilde := &paillier.PublicKey{N: NTildei}
-	skTilde := &paillier.PrivateKey{PublicKey: *pkTilde, LambdaN: lambdaNTilde, PhiN: phiNTilde}
-
-	modProofTilde := skTilde.ModProof()
+	dlnProof1 := dlnp.NewProof(h1i, h2i, alpha, p, q, NTildei)
+	dlnProof2 := dlnp.NewProof(h2i, h1i, beta, p, q, NTildei)
 
 	// for this P: SAVE
 	// - shareID
@@ -125,22 +109,10 @@ func (round *round1) Start() *tss.Error {
 	round.save.PaillierPKs[i] = &preParams.PaillierSK.PublicKey
 	round.temp.deCommitPolyG = cmt.D
 
-	round.temp.skTilde = skTilde
-
 	// BROADCAST commitments, paillier pk + proof; round 1 message
 	{
 		msg, err := NewKGRound1Message(
-			round.PartyID(),
-			cmt.C,
-			&preParams.PaillierSK.PublicKey,
-			preParams.NTildei,
-			preParams.H1i,
-			preParams.H2i,
-			dlnProof1,
-			dlnProof2,
-			modProof,
-			modProofTilde,
-		)
+			round.PartyID(), cmt.C, &preParams.PaillierSK.PublicKey, preParams.NTildei, preParams.H1i, preParams.H2i, dlnProof1, dlnProof2)
 		if err != nil {
 			return round.WrapError(err, Pi)
 		}
